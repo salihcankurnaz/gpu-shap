@@ -39,5 +39,4 @@ Important limitations:
 
 ## License
 
-No root `LICENSE` file is currently committed. Treat the repository source as unlicensed
-until a separate provenance/license review is completed.
+MIT License. See [`LICENSE`](LICENSE).
