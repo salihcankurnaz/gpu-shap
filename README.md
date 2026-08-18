@@ -1,9 +1,11 @@
 # GPU SHAP
 
-**O(1) Shapley values. First GPU-native SHAP implementation.**
+> **Research status:** experimental GPU implementation of a sampled, SHAP-like feature-attribution estimator. It is approximate and is not a drop-in correctness-equivalent replacement for official SHAP implementations.
+**GPU-batched Monte Carlo-style feature attribution experiments.**
 
-Official SHAP scales linearly with instances: 500 → 5.5s, 2000 → 22s.
-GPU SHAP stays flat: 500 → 0.78s, 2000 → 0.82s. **27x faster at scale.**
+`GPUExplainer.shap_values` samples random feature coalitions and batches model evaluations
+on the selected device. Runtime therefore depends on `n_samples`, feature count, instance
+count, and model inference cost; it is not O(1).
 
 ```python
 from gpu_shap import GPUExplainer
@@ -15,29 +17,20 @@ explainer.feature_importance(feature_names)
 explainer.plot(feature_names)
 ```
 
-## Scaling
+## Method and validation
 
-| N instances | Official SHAP | GPU SHAP | Speedup |
-|-------------|-------------|----------|---------|
-| 100 | 1.1s | 0.71s | **1.6x** |
-| 200 | 2.1s | 0.73s | **2.9x** |
-| 500 | 5.5s | 0.78s | **7.1x** |
-| 2000 | ~22s | 0.82s | **~27x** |
+The implementation estimates marginal contributions from sampled coalitions. The current
+repository includes a CUDA smoke test and an optional comparison path against
+`shap.KernelExplainer`, but it does not contain a committed benchmark/result artifact that
+supports the historical scaling table or a universal speedup claim.
 
-GPU time is **constant**. Official time grows linearly.
+Important limitations:
 
-## Accuracy
-
-- Feature ranking correlation: 0.79 with official KernelSHAP
-- Top 5 feature overlap: 4/5
-- Correct #1 feature identification
-
-## Why
-
-EU AI Act 2026 mandates model explainability.
-SHAP is the standard method but too slow for production.
-GPU SHAP makes real-time explainability possible.
-
+- attribution values are approximate and depend on the sampling budget;
+- runtime scales with the sampling budget, feature count, instance count, and model cost;
+- the estimator is not mathematically equivalent to every SHAP explainer;
+- any accuracy or speed comparison should record the dataset, model, background set,
+  sample budget, hardware, software versions, and raw outputs.
 ## Requirements
 
 - PyTorch 2.0+ with CUDA
@@ -46,4 +39,5 @@ GPU SHAP makes real-time explainability possible.
 
 ## License
 
-MIT
+No root `LICENSE` file is currently committed. Treat the repository source as unlicensed
+until a separate provenance/license review is completed.
