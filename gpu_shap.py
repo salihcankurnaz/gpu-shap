@@ -1,7 +1,11 @@
 """
-GPU SHAP: O(1) Shapley values — scales with instances, not time.
-================================================================
-First GPU-native SHAP. Official SHAP is O(N). This is O(1).
+Experimental GPU-batched, sampled feature-attribution estimator.
+
+GPUExplainer samples random feature coalitions and estimates marginal feature
+contributions by batching model evaluations on the selected device. The output is
+approximate and depends on the sampling budget. This module is not a drop-in,
+correctness-equivalent replacement for official SHAP explainers, and its runtime is
+not O(1): it depends on n_samples, feature count, instance count, and model cost.
 
 Usage:
     from gpu_shap import GPUExplainer
@@ -9,7 +13,6 @@ Usage:
     explainer = GPUExplainer(model_fn, background_data)
     shap_values = explainer.shap_values(X_test)
 
-    # Feature importance
     explainer.feature_importance()
     explainer.plot()  # text-based plot
 """
@@ -19,14 +22,14 @@ import time
 
 
 class GPUExplainer:
-    """GPU-accelerated SHAP explainer. Drop-in replacement for shap.KernelExplainer."""
+    """Sampled, GPU-batched SHAP-like feature-attribution estimator."""
 
     def __init__(self, model_fn, background, device=None):
         """
         Args:
             model_fn: callable that takes (batch, features) tensor -> (batch,) predictions
-            background: numpy array or tensor, reference data for SHAP baseline
-            device: torch device (default: cuda if available)
+            background: numpy array or tensor, reference data for the attribution baseline
+            device: torch device (default: cuda if available, otherwise cpu)
         """
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -45,11 +48,11 @@ class GPUExplainer:
         self._last_X = None
 
     def shap_values(self, X, n_samples=200):
-        """Compute SHAP values for X.
+        """Estimate feature-attribution values for X from sampled coalitions.
 
         Args:
             X: input data — numpy array, torch tensor, or pandas DataFrame
-            n_samples: number of random coalitions (more = more accurate)
+            n_samples: number of random coalitions (larger budgets reduce sampling noise)
 
         Returns:
             numpy array of shape (n_instances, n_features)
@@ -72,8 +75,10 @@ class GPUExplainer:
         for s in range(n_samples):
             # Random coalition
             mask = (torch.rand(nf, device=self.device) > 0.5).float()
-            if mask.sum() < 1: mask[0] = 1
-            if mask.sum() >= nf: mask[0] = 0
+            if mask.sum() < 1:
+                mask[0] = 1
+            if mask.sum() >= nf:
+                mask[0] = 0
 
             # Prediction with coalition
             X_with = X * mask.unsqueeze(0) + bg * (1 - mask.unsqueeze(0))
@@ -113,7 +118,7 @@ class GPUExplainer:
         return shap_vals.cpu().numpy()
 
     def feature_importance(self, feature_names=None):
-        """Print feature importance ranking."""
+        """Print a mean-absolute-attribution feature ranking."""
         if self._last_shap is None:
             print("Run shap_values() first.")
             return
@@ -121,18 +126,19 @@ class GPUExplainer:
         importance = self._last_shap.abs().mean(dim=0).cpu().numpy()
         ranking = importance.argsort()[::-1]
 
-        print(f"\nFeature Importance (mean |SHAP|):")
+        print("\nFeature Importance (mean |attribution|):")
         print(f"{'Rank':<6} {'Feature':<20} {'Importance':<12}")
         print("-" * 38)
+        max_importance = importance.max()
         for i, f in enumerate(ranking):
             name = feature_names[f] if feature_names else f"Feature {f}"
-            bar = "#" * int(importance[f] / importance.max() * 20)
+            bar = "#" * int(importance[f] / max_importance * 20) if max_importance > 0 else ""
             print(f"{i+1:<6} {name:<20} {importance[f]:<12.4f} {bar}")
 
         return importance
 
     def plot(self, feature_names=None, top_k=10):
-        """Text-based SHAP summary plot."""
+        """Print a text-based attribution summary."""
         if self._last_shap is None:
             print("Run shap_values() first.")
             return
@@ -140,11 +146,11 @@ class GPUExplainer:
         importance = self._last_shap.abs().mean(dim=0).cpu().numpy()
         ranking = importance.argsort()[::-1][:top_k]
 
-        print(f"\nSHAP Summary (top {top_k} features):")
-        max_imp = importance[ranking[0]]
+        print(f"\nAttribution Summary (top {top_k} features):")
+        max_imp = importance[ranking[0]] if len(ranking) else 0
         for f in ranking:
             name = feature_names[f] if feature_names else f"F{f}"
-            bar_len = int(importance[f] / max_imp * 40)
+            bar_len = int(importance[f] / max_imp * 40) if max_imp > 0 else 0
             bar = "+" * bar_len
             print(f"  {name:<12} |{bar:<40}| {importance[f]:.4f}")
 
@@ -153,28 +159,43 @@ class GPUExplainer:
 if __name__ == '__main__':
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.datasets import make_classification
+
     try:
         from py2tensor.sklearn_to_gpu import convert_rf
     except ImportError:
-        import sys; sys.path.insert(0, r"C:\Users\salih\Desktop\py2tensor")
-        from sklearn_to_gpu import convert_rf
+        try:
+            from sklearn_to_gpu import convert_rf
+        except ImportError as exc:
+            raise SystemExit(
+                "Demo requires a compatible sklearn_to_gpu/py2tensor converter on PYTHONPATH."
+            ) from exc
+
+    if not torch.cuda.is_available():
+        raise SystemExit("The sklearn-to-GPU demo requires CUDA. The GPUExplainer class itself can run on CPU.")
 
     device = torch.device("cuda")
     print(f"GPU: {torch.cuda.get_device_name()}")
     print("=" * 60)
-    print("GPU SHAP: Clean API Demo")
+    print("GPU-batched sampled attribution demo")
     print("=" * 60)
 
     # Train
-    X, y = make_classification(n_samples=5000, n_features=10, n_informative=4,
-                                n_redundant=2, random_state=42)
+    X, y = make_classification(
+        n_samples=5000,
+        n_features=10,
+        n_informative=4,
+        n_redundant=2,
+        random_state=42,
+    )
     feature_names = [f"feat_{i}" for i in range(10)]
     rf = RandomForestClassifier(n_estimators=30, max_depth=5, random_state=42)
     rf.fit(X, y)
 
     # Convert to GPU
     gpu_rf = convert_rf(rf).to(device)
-    def predict(X_t): return gpu_rf(X_t).float()
+
+    def predict(X_t):
+        return gpu_rf(X_t).float()
 
     # Explain
     print("\n--- Explaining 500 predictions ---")
@@ -188,22 +209,24 @@ if __name__ == '__main__':
     explainer.feature_importance(feature_names)
     explainer.plot(feature_names)
 
-    # Compare with official
+    # Exploratory comparison with an official SHAP implementation when installed.
     try:
         import shap
-        print(f"\n--- Official SHAP comparison ---")
+
+        print("\n--- Exploratory SHAP comparison ---")
         t0 = time.time()
         exp_off = shap.KernelExplainer(lambda x: rf.predict_proba(x)[:, 1], X[:50])
         sv_off = exp_off.shap_values(X[:500], nsamples=100, silent=True)
         t_off = time.time() - t0
 
-        corr = np.corrcoef(shap_vals.flatten(), sv_off.flatten())[0, 1]
-        print(f"  Official: {t_off:.1f}s | GPU: {t:.1f}s | Speedup: {t_off/t:.1f}x")
-        print(f"  Correlation: {corr:.4f}")
+        corr = np.corrcoef(shap_vals.flatten(), np.asarray(sv_off).flatten())[0, 1]
+        print(f"  Official: {t_off:.1f}s | sampled GPU path: {t:.1f}s")
+        print(f"  Attribution correlation: {corr:.4f}")
+        print("  Different algorithms/budgets: do not interpret this timing as a universal speedup.")
     except ImportError:
         print("  (shap not installed)")
 
-    print(f"\n  Usage:")
-    print(f"    explainer = GPUExplainer(model_fn, background_data)")
-    print(f"    shap_values = explainer.shap_values(X_test)")
-    print(f"    explainer.plot(feature_names)")
+    print("\n  Usage:")
+    print("    explainer = GPUExplainer(model_fn, background_data)")
+    print("    values = explainer.shap_values(X_test)")
+    print("    explainer.plot(feature_names)")
