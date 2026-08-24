@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile source files
+        run: python -m py_compile gpu_shap.py test_quick.py setup.py
+      - name: GPU-test scope note
+        run: echo "Functional GPU tests are intentionally excluded from GitHub-hosted CPU runners."
