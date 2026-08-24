@@ -1,5 +1,4 @@
-"""Quick test for GPU SHAP."""
-import sys
+"""Quick smoke test for the sampled GPU SHAP-like estimator."""
 
 # Test 1: Import
 try:
@@ -8,45 +7,41 @@ try:
 except Exception as e:
     print(f"[FAIL] import: {e}")
 
-# Test 2: Basic usage with simple model
+# Test 2: Basic usage with a simple model. This path can run on CPU when CUDA is absent.
 try:
     import torch
-    import numpy as np
 
-    device = torch.device('cuda')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Simple linear model as test
     def model_fn(X):
-        """X: [batch, features] -> [batch]"""
+        """X: [batch, features] -> [batch]."""
         weights = torch.tensor([1.0, 2.0, -1.0, 0.5], device=device)
         return (X * weights).sum(dim=1)
 
-    # Background data
     bg = torch.randn(50, 4, device=device)
+    explainer = GPUExplainer(model_fn, bg, device=device)
+    print(f"[OK] GPUExplainer created on {device}")
 
-    # Create explainer
-    explainer = GPUExplainer(model_fn, bg)
-    print("[OK] GPUExplainer created")
-
-    # Compute SHAP values
     test_data = torch.randn(10, 4, device=device)
-    shap_vals = explainer.shap_values(test_data)
-    print(f"[OK] SHAP values computed: shape={shap_vals.shape}")
+    values = explainer.shap_values(test_data, n_samples=32)
+    print(f"[OK] attribution values computed: shape={values.shape}")
 
-    # Feature importance
     imp = explainer.feature_importance()
-    print(f"[OK] Feature importance: {imp}")
+    print(f"[OK] feature importance: {imp}")
 
 except Exception as e:
     print(f"[FAIL] usage: {e}")
-    import traceback; traceback.print_exc()
+    import traceback
+    traceback.print_exc()
 
-# Test 3: Demo with sklearn (the problematic part)
+# Test 3: Optional sklearn-to-GPU converter discovery. No machine-local path injection.
 try:
-    sys.path.insert(0, r"C:\Users\salih\Desktop\py2tensor")
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.datasets import make_classification
-    from sklearn_to_gpu import convert_rf
-    print("[OK] sklearn_to_gpu available")
+    from sklearn.ensemble import RandomForestClassifier  # noqa: F401
+    from sklearn.datasets import make_classification  # noqa: F401
+    try:
+        from py2tensor.sklearn_to_gpu import convert_rf  # noqa: F401
+    except ImportError:
+        from sklearn_to_gpu import convert_rf  # noqa: F401
+    print("[OK] optional sklearn-to-GPU converter available")
 except Exception as e:
-    print(f"[SKIP] sklearn demo: {e}")
+    print(f"[SKIP] optional sklearn demo dependency unavailable: {e}")
